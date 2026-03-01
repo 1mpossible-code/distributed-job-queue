@@ -1,6 +1,8 @@
 package redisbroker
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -8,6 +10,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 )
+
+var ErrNoJob = redis.Nil
 
 type Broker struct {
 	rdb            redis.UniversalClient
@@ -58,4 +62,29 @@ func (b *Broker) processingKey() string {
 
 func (b *Broker) dlqKey() string {
 	return fmt.Sprintf("%s:dlq", b.prefix)
+}
+
+func (b *Broker) Enqueue(ctx context.Context, job queue.Job) error {
+	if err := job.Validate(); err != nil {
+		return err
+	}
+	if job.EnqueuedAt.IsZero() {
+		job.EnqueuedAt = time.Now().UTC()
+	}
+
+	idemKey := fmt.Sprintf("%s:idem:%s", b.prefix, job.IdempotencyKey)
+	ok, err := b.rdb.SetNX(ctx, idemKey, job.ID, b.idempotencyTTL).Result()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+
+	raw, err := json.Marshal(job)
+	if err != nil {
+		return err
+	}
+	_, err = b.rdb.RPush(ctx, b.readyKey(job.Priority), raw).Result()
+	return err
 }
