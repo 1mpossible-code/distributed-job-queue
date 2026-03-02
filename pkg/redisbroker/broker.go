@@ -167,6 +167,10 @@ func (b *Broker) Nack(ctx context.Context, lease queue.Lease, decision queue.Ret
 	if err != nil {
 		return err
 	}
+	if decision.Attempt >= decision.MaxAttempts {
+		_, err = b.rdb.RPush(ctx, b.dlqKey(), nextRaw).Result()
+		return err
+	}
 	retryItem, err := json.Marshal(scheduledRetry{ID: lease.Token, Payload: nextRaw})
 	if err != nil {
 		return err
@@ -175,6 +179,47 @@ func (b *Broker) Nack(ctx context.Context, lease queue.Lease, decision queue.Ret
 		Score:  float64(decision.RetryAtUnix),
 		Member: retryItem,
 	}).Err()
+}
+
+func (b *Broker) RequeueExpired(ctx context.Context) (int64, error) {
+	now := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	tokens, err := b.rdb.ZRangeByScore(ctx, b.inflightKey(), &redis.ZRangeBy{
+		Min: "-inf",
+		Max: now,
+	}).Result()
+	if err != nil {
+		return 0, err
+	}
+	var moved int64
+	for _, token := range tokens {
+		raw, err := b.rdb.HGet(ctx, b.processingKey(), token).Result()
+		if err == redis.Nil {
+			_ = b.rdb.ZRem(ctx, b.inflightKey(), token).Err()
+			continue
+		}
+		if err != nil {
+			return moved, err
+		}
+		var job queue.Job
+		if err := json.Unmarshal([]byte(raw), &job); err != nil {
+			return moved, err
+		}
+		if err := b.rdb.ZRem(ctx, b.inflightKey(), token).Err(); err != nil {
+			return moved, err
+		}
+		if err := b.rdb.HDel(ctx, b.processingKey(), token).Err(); err != nil {
+			return moved, err
+		}
+		if err := b.rdb.LPush(ctx, b.readyKey(job.Priority), raw).Err(); err != nil {
+			return moved, err
+		}
+		moved++
+	}
+	return moved, nil
+}
+
+func (b *Broker) DLQLen(ctx context.Context) (int64, error) {
+	return b.rdb.LLen(ctx, b.dlqKey()).Result()
 }
 
 func (b *Broker) promoteDueRetries(ctx context.Context) error {
