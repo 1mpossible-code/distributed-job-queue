@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"time"
 
 	"distributed_job_queue/pkg/queue"
@@ -25,6 +26,11 @@ type Config struct {
 	Prefix         string
 	LeaseDuration  time.Duration
 	IdempotencyTTL time.Duration
+}
+
+type scheduledRetry struct {
+	ID      string `json:"id"`
+	Payload []byte `json:"payload"`
 }
 
 func New(rdb redis.UniversalClient, cfg Config) *Broker {
@@ -91,6 +97,10 @@ func (b *Broker) Enqueue(ctx context.Context, job queue.Job) error {
 }
 
 func (b *Broker) Reserve(ctx context.Context, workerID string) (queue.Job, queue.Lease, error) {
+	if err := b.promoteDueRetries(ctx); err != nil {
+		return queue.Job{}, queue.Lease{}, err
+	}
+
 	var raw string
 	var err error
 	for _, priority := range []queue.Priority{queue.PriorityHigh, queue.PriorityMedium, queue.PriorityLow} {
@@ -134,6 +144,65 @@ func (b *Broker) Ack(ctx context.Context, lease queue.Lease) error {
 		return err
 	}
 	return b.rdb.HDel(ctx, b.processingKey(), lease.Token).Err()
+}
+
+func (b *Broker) Nack(ctx context.Context, lease queue.Lease, decision queue.RetryDecision) error {
+	raw, err := b.rdb.HGet(ctx, b.processingKey(), lease.Token).Result()
+	if err != nil {
+		return err
+	}
+	if err := b.rdb.ZRem(ctx, b.inflightKey(), lease.Token).Err(); err != nil {
+		return err
+	}
+	if err := b.rdb.HDel(ctx, b.processingKey(), lease.Token).Err(); err != nil {
+		return err
+	}
+
+	var job queue.Job
+	if err := json.Unmarshal([]byte(raw), &job); err != nil {
+		return err
+	}
+	job.Attempt = decision.Attempt
+	nextRaw, err := json.Marshal(job)
+	if err != nil {
+		return err
+	}
+	retryItem, err := json.Marshal(scheduledRetry{ID: lease.Token, Payload: nextRaw})
+	if err != nil {
+		return err
+	}
+	return b.rdb.ZAdd(ctx, b.retryKey(), redis.Z{
+		Score:  float64(decision.RetryAtUnix),
+		Member: retryItem,
+	}).Err()
+}
+
+func (b *Broker) promoteDueRetries(ctx context.Context) error {
+	now := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	items, err := b.rdb.ZRangeByScore(ctx, b.retryKey(), &redis.ZRangeBy{
+		Min: "-inf",
+		Max: now,
+	}).Result()
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		var sr scheduledRetry
+		if err := json.Unmarshal([]byte(item), &sr); err != nil {
+			return err
+		}
+		var job queue.Job
+		if err := json.Unmarshal(sr.Payload, &job); err != nil {
+			return err
+		}
+		if err := b.rdb.ZRem(ctx, b.retryKey(), item).Err(); err != nil {
+			return err
+		}
+		if err := b.rdb.RPush(ctx, b.readyKey(job.Priority), sr.Payload).Err(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (b *Broker) newLeaseToken(jobID string) string {
