@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"distributed_job_queue/pkg/metrics"
 	"distributed_job_queue/pkg/queue"
 	"distributed_job_queue/pkg/redisbroker"
 )
@@ -15,6 +16,7 @@ type Config struct {
 	Concurrency  int
 	PollInterval time.Duration
 	RetryPolicy  queue.RetryPolicy
+	Metrics      *metrics.Collector
 }
 
 type Runtime struct {
@@ -42,6 +44,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if r.cfg.Metrics != nil {
+				r.cfg.Metrics.ActiveWorkers.Inc()
+				defer r.cfg.Metrics.ActiveWorkers.Dec()
+			}
 			r.loop(ctx)
 		}()
 	}
@@ -70,6 +76,12 @@ func (r *Runtime) loop(ctx context.Context) {
 		}
 		if err := r.handler.Handle(ctx, job); err == nil {
 			_ = r.broker.Ack(ctx, lease)
+			if r.cfg.Metrics != nil {
+				r.cfg.Metrics.Processed.WithLabelValues("success").Inc()
+				if !job.EnqueuedAt.IsZero() {
+					r.cfg.Metrics.LatencyMilliseconds.Observe(float64(time.Since(job.EnqueuedAt).Milliseconds()))
+				}
+			}
 			continue
 		}
 		nextAttempt := job.Attempt + 1
@@ -78,5 +90,14 @@ func (r *Runtime) loop(ctx context.Context) {
 			MaxAttempts: job.MaxAttempts,
 			RetryAtUnix: time.Now().Add(r.cfg.RetryPolicy.NextDelay(nextAttempt)).UnixMilli(),
 		})
+		if r.cfg.Metrics != nil {
+			if nextAttempt >= job.MaxAttempts {
+				r.cfg.Metrics.DLQ.Inc()
+				r.cfg.Metrics.Processed.WithLabelValues("failed").Inc()
+			} else {
+				r.cfg.Metrics.Retries.Inc()
+				r.cfg.Metrics.Processed.WithLabelValues("retry").Inc()
+			}
+		}
 	}
 }
