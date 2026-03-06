@@ -68,10 +68,14 @@ func (r *Runtime) loop(ctx context.Context) {
 		job, lease, err := r.broker.Reserve(ctx, r.cfg.WorkerID)
 		if err != nil {
 			if errors.Is(err, redisbroker.ErrNoJob) {
-				<-ticker.C
+				if !waitForNextPoll(ctx, ticker.C) {
+					return
+				}
 				continue
 			}
-			<-ticker.C
+			if !waitForNextPoll(ctx, ticker.C) {
+				return
+			}
 			continue
 		}
 		if err := r.handler.Handle(ctx, job); err == nil {
@@ -99,5 +103,14 @@ func (r *Runtime) loop(ctx context.Context) {
 				r.cfg.Metrics.Processed.WithLabelValues("retry").Inc()
 			}
 		}
+	}
+}
+
+func waitForNextPoll(ctx context.Context, tick <-chan time.Time) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-tick:
+		return true
 	}
 }

@@ -72,3 +72,15 @@ func TestWorkerNacksOnFailure(t *testing.T) {
 		t.Fatal("expected nack")
 	}
 }
+
+func TestWorkerStopsPromptlyOnCancel(t *testing.T) {
+	fb := &fakeBroker{}
+	rt := New(fb, fakeHandler{}, Config{WorkerID: "w1", PollInterval: time.Second})
+	ctx, cancel := context.WithCancel(context.Background())
+	start := time.Now()
+	go func() { time.Sleep(5 * time.Millisecond); cancel() }()
+	_ = rt.Run(ctx)
+	if time.Since(start) > 100*time.Millisecond {
+		t.Fatal("worker shutdown took too long")
+	}
+}
