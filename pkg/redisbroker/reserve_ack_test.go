@@ -1,6 +1,7 @@
 package redisbroker
 
 import (
+	"errors"
 	"testing"
 
 	"distributed_job_queue/pkg/queue"
@@ -51,5 +52,13 @@ func TestAckRemovesInflightState(t *testing.T) {
 	inflight, _ := b.rdb.ZCard(ctx, b.inflightKey()).Result()
 	if inflight != 0 {
 		t.Fatalf("expected inflight=0, got %d", inflight)
+	}
+}
+
+func TestReserveNoJob(t *testing.T) {
+	b, ctx := newTestBroker(t)
+	_, _, err := b.Reserve(ctx, "w1")
+	if !errors.Is(err, ErrNoJob) {
+		t.Fatalf("expected ErrNoJob, got %v", err)
 	}
 }
