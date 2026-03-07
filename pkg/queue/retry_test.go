@@ -22,3 +22,17 @@ func TestExponentialBackoffNextDelay(t *testing.T) {
 		t.Fatalf("attempt 5 expected cap 8s, got %s", got)
 	}
 }
+
+func TestExponentialBackoffJitterBounds(t *testing.T) {
+	p := ExponentialBackoff{
+		BaseDelay:  time.Second,
+		MaxDelay:   8 * time.Second,
+		JitterFrac: 0.2,
+	}
+	got := p.NextDelay(2)
+	min := 1600 * time.Millisecond
+	max := 2400 * time.Millisecond
+	if got < min || got > max {
+		t.Fatalf("expected delay in [%s, %s], got %s", min, max, got)
+	}
+}
