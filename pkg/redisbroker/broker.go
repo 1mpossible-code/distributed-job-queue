@@ -79,6 +79,7 @@ func (b *Broker) Enqueue(ctx context.Context, job queue.Job) error {
 		job.EnqueuedAt = time.Now().UTC()
 	}
 
+	// setnx is the simple dedupe gate for duplicate enqueue calls.
 	idemKey := fmt.Sprintf("%s:idem:%s", b.prefix, job.IdempotencyKey)
 	ok, err := b.rdb.SetNX(ctx, idemKey, job.ID, b.idempotencyTTL).Result()
 	if err != nil {
@@ -97,6 +98,7 @@ func (b *Broker) Enqueue(ctx context.Context, job queue.Job) error {
 }
 
 func (b *Broker) Reserve(ctx context.Context, workerID string) (queue.Job, queue.Lease, error) {
+	// move retry jobs that are due back into ready queues.
 	if err := b.promoteDueRetries(ctx); err != nil {
 		return queue.Job{}, queue.Lease{}, err
 	}
@@ -127,6 +129,7 @@ func (b *Broker) Reserve(ctx context.Context, workerID string) (queue.Job, queue
 		Worker:  workerID,
 		Expires: time.Now().Add(b.leaseDuration).UnixMilli(),
 	}
+	// keep both payload and expiry index so expired leases can be recovered.
 	if err := b.rdb.HSet(ctx, b.processingKey(), lease.Token, raw).Err(); err != nil {
 		return queue.Job{}, queue.Lease{}, err
 	}
@@ -168,6 +171,7 @@ func (b *Broker) Nack(ctx context.Context, lease queue.Lease, decision queue.Ret
 		return err
 	}
 	if decision.Attempt >= decision.MaxAttempts {
+		// after max attempts we stop retrying and put it in dlq.
 		_, err = b.rdb.RPush(ctx, b.dlqKey(), nextRaw).Result()
 		return err
 	}
@@ -213,6 +217,7 @@ func (b *Broker) RequeueExpired(ctx context.Context) (int64, error) {
 		if err := b.rdb.LPush(ctx, b.readyKey(job.Priority), raw).Err(); err != nil {
 			return moved, err
 		}
+		// lpush puts recovered jobs at the front to minimize recovery lag.
 		moved++
 	}
 	return moved, nil

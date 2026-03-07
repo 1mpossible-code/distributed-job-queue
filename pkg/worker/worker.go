@@ -79,6 +79,7 @@ func (r *Runtime) loop(ctx context.Context) {
 			continue
 		}
 		if err := r.handler.Handle(ctx, job); err == nil {
+			// success path: ack and update success counters.
 			_ = r.broker.Ack(ctx, lease)
 			if r.cfg.Metrics != nil {
 				r.cfg.Metrics.Processed.WithLabelValues("success").Inc()
@@ -89,6 +90,7 @@ func (r *Runtime) loop(ctx context.Context) {
 			continue
 		}
 		nextAttempt := job.Attempt + 1
+		// failure path: schedule retry or dlq based on attempt count.
 		_ = r.broker.Nack(ctx, lease, queue.RetryDecision{
 			Attempt:     nextAttempt,
 			MaxAttempts: job.MaxAttempts,

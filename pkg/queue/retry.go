@@ -16,9 +16,11 @@ type ExponentialBackoff struct {
 }
 
 func (b ExponentialBackoff) NextDelay(attempt int) time.Duration {
+	// make sure first failure still gets a base delay.
 	if attempt < 1 {
 		attempt = 1
 	}
+	// each attempt doubles until max delay.
 	delay := b.BaseDelay * time.Duration(1<<(attempt-1))
 	if delay > b.MaxDelay {
 		delay = b.MaxDelay
