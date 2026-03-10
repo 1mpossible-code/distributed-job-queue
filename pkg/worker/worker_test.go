@@ -103,3 +103,20 @@ func TestWorkerSuccessMetricIncrements(t *testing.T) {
 		t.Fatalf("expected success metric increment, got %v", got)
 	}
 }
+
+func TestWorkerFailureMetricsIncrement(t *testing.T) {
+	fb := &fakeBroker{jobs: []queue.Job{{ID: "j1", Type: "t", IdempotencyKey: "i1", Priority: queue.PriorityHigh, MaxAttempts: 1}}}
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	rt := New(fb, fakeHandler{err: errors.New("boom")}, Config{WorkerID: "w1", PollInterval: time.Millisecond, Metrics: m})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(10 * time.Millisecond); cancel() }()
+	_ = rt.Run(ctx)
+
+	if got := testutil.ToFloat64(m.DLQ); got < 1 {
+		t.Fatalf("expected dlq metric increment, got %v", got)
+	}
+	if got := testutil.ToFloat64(m.Processed.WithLabelValues("failed")); got < 1 {
+		t.Fatalf("expected failed metric increment, got %v", got)
+	}
+}
