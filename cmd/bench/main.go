@@ -65,8 +65,15 @@ func main() {
 	for l := range h.latencies {
 		latencies = append(latencies, l)
 	}
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 	total := time.Since(start)
-	fmt.Printf("throughput=%.2f jobs/sec p95=%s total=%s\n",
-		float64(*jobs)/total.Seconds(), latencies[len(latencies)*95/100], total)
+	if len(latencies) == 0 {
+		fmt.Printf("throughput=0.00 jobs/sec p50=0s p95=0s p99=0s total=%s\n", total)
+		return
+	}
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	p50 := latencies[len(latencies)*50/100]
+	p95 := latencies[len(latencies)*95/100]
+	p99 := latencies[len(latencies)*99/100]
+	fmt.Printf("throughput=%.2f jobs/sec p50=%s p95=%s p99=%s total=%s\n",
+		float64(*jobs)/total.Seconds(), p50, p95, p99, total)
 }
