@@ -7,8 +7,12 @@ import (
 	"testing"
 	"time"
 
+	"distributed_job_queue/pkg/metrics"
 	"distributed_job_queue/pkg/queue"
 	"distributed_job_queue/pkg/redisbroker"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 type fakeBroker struct {
@@ -82,5 +86,20 @@ func TestWorkerStopsPromptlyOnCancel(t *testing.T) {
 	_ = rt.Run(ctx)
 	if time.Since(start) > 100*time.Millisecond {
 		t.Fatal("worker shutdown took too long")
+	}
+}
+
+func TestWorkerSuccessMetricIncrements(t *testing.T) {
+	fb := &fakeBroker{jobs: []queue.Job{{ID: "j1", Type: "t", IdempotencyKey: "i1", Priority: queue.PriorityHigh, MaxAttempts: 3}}}
+	reg := prometheus.NewRegistry()
+	m := metrics.New(reg)
+	rt := New(fb, fakeHandler{}, Config{WorkerID: "w1", PollInterval: time.Millisecond, Metrics: m})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(10 * time.Millisecond); cancel() }()
+	_ = rt.Run(ctx)
+
+	got := testutil.ToFloat64(m.Processed.WithLabelValues("success"))
+	if got < 1 {
+		t.Fatalf("expected success metric increment, got %v", got)
 	}
 }
