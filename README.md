@@ -17,5 +17,14 @@ start redis on `127.0.0.1:6379`, then:
 
 `go run ./cmd/bench -jobs 5000 -workers 16`
 
+## failure simulation
+use worker failure simulation:
+
+`go run ./cmd/worker -concurrency 8 -fail-rate 0.05`
+
+use benchmark worker-kill simulation:
+
+`go run ./cmd/bench -jobs 5000 -workers 16 -simulate-failure=true -failure-delay-ms 250`
+
 ## tests
 unit + integration tests live under `pkg/*`.
