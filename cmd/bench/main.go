@@ -33,6 +33,8 @@ func main() {
 	redisAddr := flag.String("redis", "127.0.0.1:6379", "redis address")
 	jobs := flag.Int("jobs", 2000, "job count")
 	workers := flag.Int("workers", 8, "worker count")
+	simFail := flag.Bool("simulate-failure", false, "cancel one worker mid-run")
+	failAfter := flag.Int("failure-delay-ms", 200, "delay before cancellation")
 	flag.Parse()
 
 	rdb := redis.NewClient(&redis.Options{Addr: *redisAddr})
@@ -44,9 +46,20 @@ func main() {
 
 	var done int64
 	h := &benchHandler{latencies: make(chan time.Duration, *jobs), done: &done}
+	var firstCancel context.CancelFunc
 	for i := 0; i < *workers; i++ {
 		rt := worker.New(broker, h, worker.Config{WorkerID: fmt.Sprintf("w-%d", i+1), Concurrency: 1})
-		go func() { _ = rt.Run(context.Background()) }()
+		wctx, cancel := context.WithCancel(context.Background())
+		if i == 0 {
+			firstCancel = cancel
+		}
+		go func() { _ = rt.Run(wctx) }()
+	}
+	if *simFail && firstCancel != nil {
+		go func() {
+			time.Sleep(time.Duration(*failAfter) * time.Millisecond)
+			firstCancel()
+		}()
 	}
 
 	start := time.Now()
