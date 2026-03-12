@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -22,10 +23,10 @@ type benchHandler struct {
 }
 
 func (h *benchHandler) Handle(_ context.Context, job queue.Job) error {
-	atomic.AddInt64(h.done, 1)
 	if !job.EnqueuedAt.IsZero() {
 		h.latencies <- time.Since(job.EnqueuedAt)
 	}
+	atomic.AddInt64(h.done, 1)
 	return nil
 }
 
@@ -33,6 +34,7 @@ func main() {
 	redisAddr := flag.String("redis", "127.0.0.1:6379", "redis address")
 	jobs := flag.Int("jobs", 2000, "job count")
 	workers := flag.Int("workers", 8, "worker count")
+	prefix := flag.String("prefix", fmt.Sprintf("dq-bench-%d", time.Now().UnixNano()), "redis key prefix")
 	simFail := flag.Bool("simulate-failure", false, "cancel one worker mid-run")
 	failAfter := flag.Int("failure-delay-ms", 200, "delay before cancellation")
 	flag.Parse()
@@ -40,16 +42,20 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{Addr: *redisAddr})
 	defer func() { _ = rdb.Close() }()
 	ctx := context.Background()
-	_ = rdb.FlushDB(ctx).Err()
-	broker := redisbroker.New(rdb, redisbroker.Config{Prefix: "dq"})
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		log.Fatalf("redis ping failed: %v", err)
+	}
+	broker := redisbroker.New(rdb, redisbroker.Config{Prefix: *prefix})
 	pub := producer.New(broker, nil)
 
 	var done int64
 	h := &benchHandler{latencies: make(chan time.Duration, *jobs), done: &done}
+	cancels := make([]context.CancelFunc, 0, *workers)
 	var firstCancel context.CancelFunc
 	for i := 0; i < *workers; i++ {
 		rt := worker.New(broker, h, worker.Config{WorkerID: fmt.Sprintf("w-%d", i+1), Concurrency: 1})
 		wctx, cancel := context.WithCancel(context.Background())
+		cancels = append(cancels, cancel)
 		if i == 0 {
 			firstCancel = cancel
 		}
@@ -64,13 +70,21 @@ func main() {
 
 	start := time.Now()
 	for i := 0; i < *jobs; i++ {
-		_ = pub.Enqueue(ctx, queue.Job{
+		if err := pub.Enqueue(ctx, queue.Job{
 			ID: fmt.Sprintf("job-%d", i), Type: "bench", IdempotencyKey: fmt.Sprintf("idem-%d", i), Priority: queue.PriorityMedium, MaxAttempts: 3,
-		})
+		}); err != nil {
+			for _, cancel := range cancels {
+				cancel()
+			}
+			log.Fatalf("enqueue failed for job-%d: %v", i, err)
+		}
 	}
 	for atomic.LoadInt64(&done) < int64(*jobs) {
 		_, _ = broker.RequeueExpired(ctx)
 		time.Sleep(25 * time.Millisecond)
+	}
+	for _, cancel := range cancels {
+		cancel()
 	}
 	close(h.latencies)
 
