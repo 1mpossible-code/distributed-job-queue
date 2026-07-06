@@ -6,6 +6,7 @@ REPO_URL="https://github.com/1mpossible-code/distributed-job-queue"
 REDIS_HOST="${REDIS_HOST:-redis}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 REDIS_ADDR="$REDIS_HOST:$REDIS_PORT"
+SESSION_ID="demo-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
 print_banner() {
   clear
@@ -16,6 +17,9 @@ print_banner() {
 
 A small Go-based distributed job queue with Redis-backed workers,
 priorities, idempotency keys, retries, and benchmarking.
+
+Session:
+  $SESSION_ID
 
 GitHub:
   $REPO_URL
@@ -31,18 +35,18 @@ Commands:
   help            show this menu
   about           explain what this project demonstrates
   github          print the GitHub repo link
-  status          show Redis connection + basic queue state
-  keys            list demo Redis keys
+  status          show Redis connection + this session's demo state
+  keys            list this session's Redis keys
   produce-high    enqueue a high-priority demo job
   produce-low     enqueue a low-priority demo job
   produce-batch   enqueue 5 demo jobs
   bench           run a small benchmark
-  reset           clear demo Redis state
   clear           clear the screen
   exit            close the demo session
 
 Notes:
   - This is a sandboxed browser terminal.
+  - Each visitor gets a separate session id.
   - Only the commands above are allowed.
   - Source code is available here:
     $REPO_URL
@@ -60,6 +64,9 @@ Core ideas shown here:
   - Idempotency keys to avoid duplicate enqueue behavior
   - Simple benchmark command for throughput testing
   - Dockerized deployment for reproducible demos
+
+This terminal session is namespaced as:
+  $SESSION_ID
 
 Try:
   produce-high
@@ -81,33 +88,44 @@ redis_check() {
   fi
 }
 
+session_key_count() {
+  redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" --scan --pattern "*$SESSION_ID*" | wc -l
+}
+
 status() {
   redis_check || return 1
 
   echo
-  echo "Redis database size:"
+  echo "Session:"
+  echo "  $SESSION_ID"
+
+  echo
+  echo "Total Redis database size:"
   redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" dbsize
 
   echo
-  echo "Demo keys:"
-  redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" --scan | head -20
+  echo "Keys associated with this session:"
+  session_key_count
 
   echo
+  echo "Sample session keys:"
+  redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" --scan --pattern "*$SESSION_ID*" | head -20
+
   echo
   echo "Worker is running in a separate Docker service."
-  echo "Try 'produce-high', then run 'status' again."
+  echo "Try 'produce-high' or 'produce-low', then run 'status' again."
 }
 
 list_keys() {
   redis_check || return 1
 
-  echo "Redis keys:"
-  redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" --scan | head -50
+  echo "Session keys for $SESSION_ID:"
+  redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" --scan --pattern "*$SESSION_ID*" | head -50
 }
 
 produce_job() {
   local priority="$1"
-  local id="demo-${priority}-$(date +%s%N)"
+  local id="${SESSION_ID}-${priority}-$(date +%s%N)"
 
   echo "Enqueuing ${priority}-priority job..."
   producer -redis "$REDIS_ADDR" -id "$id" -idempotency-key "$id" -priority "$priority"
@@ -116,7 +134,7 @@ produce_job() {
 }
 
 produce_batch() {
-  echo "Enqueuing 5 demo jobs..."
+  echo "Enqueuing 5 demo jobs for session $SESSION_ID..."
   echo
 
   for i in 1 2 3 4 5; do
@@ -134,21 +152,6 @@ run_bench() {
   echo
 
   bench -redis "$REDIS_ADDR" -jobs 25 -workers 2
-}
-
-reset_demo() {
-  echo "This will clear demo Redis state."
-  read -rp "Continue? [y/N] " answer
-
-  case "$answer" in
-    y|Y|yes|YES)
-      redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" flushdb >/dev/null
-      echo "Demo Redis state cleared."
-      ;;
-    *)
-      echo "Reset cancelled."
-      ;;
-  esac
 }
 
 print_banner
@@ -183,9 +186,6 @@ while true; do
       ;;
     bench)
       run_bench
-      ;;
-    reset)
-      reset_demo
       ;;
     clear)
       print_banner
