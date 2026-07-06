@@ -1,0 +1,24 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["worker", "-concurrency", "2"]
+    depends_on:
+      - redis
+
+  demo:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7681:7681"
+    depends_on:
+      - redis
+      - worker
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
