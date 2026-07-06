@@ -7,7 +7,7 @@ services:
   worker:
     build: .
     restart: unless-stopped
-    command: ["worker", "-concurrency", "2"]
+    command: ["worker", "-redis", "redis:6379", "-concurrency", "2"]
     depends_on:
       - redis
 

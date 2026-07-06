@@ -5,6 +5,7 @@ set -u
 REPO_URL="https://github.com/1mpossible-code/distributed-job-queue"
 REDIS_HOST="${REDIS_HOST:-redis}"
 REDIS_PORT="${REDIS_PORT:-6379}"
+REDIS_ADDR="$REDIS_HOST:$REDIS_PORT"
 
 print_banner() {
   clear
@@ -73,9 +74,9 @@ EOF
 
 redis_check() {
   if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping >/dev/null 2>&1; then
-    echo "Redis: connected at $REDIS_HOST:$REDIS_PORT"
+    echo "Redis: connected at $REDIS_ADDR"
   else
-    echo "Redis: not reachable at $REDIS_HOST:$REDIS_PORT"
+    echo "Redis: not reachable at $REDIS_ADDR"
     return 1
   fi
 }
@@ -93,7 +94,7 @@ status() {
 
   echo
   echo
-  echo "Worker should be running in a separate Docker service."
+  echo "Worker is running in a separate Docker service."
   echo "Try 'produce-high', then run 'status' again."
 }
 
@@ -109,13 +110,14 @@ produce_job() {
   local id="demo-${priority}-$(date +%s%N)"
 
   echo "Enqueuing ${priority}-priority job..."
-  producer -id "$id" -idempotency-key "$id" -priority "$priority"
+  producer -redis "$REDIS_ADDR" -id "$id" -idempotency-key "$id" -priority "$priority"
   echo
   echo "Job id: $id"
 }
 
 produce_batch() {
   echo "Enqueuing 5 demo jobs..."
+  echo
 
   for i in 1 2 3 4 5; do
     if (( i % 2 == 0 )); then
@@ -131,7 +133,7 @@ run_bench() {
   echo "This is intentionally small so the public demo stays lightweight."
   echo
 
-  bench -jobs 25 -workers 2
+  bench -redis "$REDIS_ADDR" -jobs 25 -workers 2
 }
 
 reset_demo() {
